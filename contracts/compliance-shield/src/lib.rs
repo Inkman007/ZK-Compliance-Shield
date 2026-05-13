@@ -2,50 +2,34 @@
 
 use soroban_sdk::{
     contract, contractimpl, contractmeta, contracttype,
-    crypto::bn254::{Bn254Fr, Bn254G1Affine, Bn254G2Affine},
+    crypto::bn254::{Bn254G1Affine, Bn254G2Affine, Fr},
     panic_with_error, symbol_short,
     vec,
     Address, BytesN, Env, U256,
 };
 
-// ── Contract metadata (Protocol 25 / X-Ray) ──────────────────────────────────
+// ── Contract metadata ─────────────────────────────────────────────────────────
 
-contractmeta!(
-    key = "name",
-    val = "ZK-Compliance-Shield"
-);
-contractmeta!(
-    key = "description",
-    val = "Privacy-preserving KYC compliance layer using Groth16/BN254 on Stellar Protocol 25"
-);
-contractmeta!(
-    key = "version",
-    val = "0.2.0"
-);
+contractmeta!(key = "name",        val = "ZK-Compliance-Shield");
+contractmeta!(key = "description", val = "Privacy-preserving KYC compliance layer using Groth16/BN254 on Stellar Protocol 25");
+contractmeta!(key = "version",     val = "0.3.0");
 
 // ── TTL constants (ledgers) ───────────────────────────────────────────────────
-//
-// Nullifiers must never expire — a lapsed nullifier enables identity replay.
 // ~1 year at 5-second ledger close = 6_307_200 ledgers.
-// We extend when TTL drops below 30 days (518_400 ledgers).
+// Extend when TTL drops below 30 days (518_400 ledgers).
 
-const NULLIFIER_TTL_THRESHOLD: u32 = 518_400;   // 30 days
-const NULLIFIER_TTL_EXTEND_TO: u32 = 6_307_200; // ~1 year
-
-// Instance storage (Authority + MerkleRoot) must also stay alive.
-const INSTANCE_TTL_THRESHOLD: u32 = 518_400;   // 30 days
-const INSTANCE_TTL_EXTEND_TO: u32 = 6_307_200; // ~1 year
+const NULLIFIER_TTL_THRESHOLD: u32 = 518_400;
+const NULLIFIER_TTL_EXTEND_TO: u32 = 6_307_200;
+const INSTANCE_TTL_THRESHOLD:  u32 = 518_400;
+const INSTANCE_TTL_EXTEND_TO:  u32 = 6_307_200;
 
 // ── Storage keys ─────────────────────────────────────────────────────────────
 
 #[contracttype]
 #[derive(Clone)]
 pub enum DataKey {
-    /// Trusted authority address (set once at initialisation).
     Authority,
-    /// Current Merkle root of verified-user hashes.
     MerkleRoot,
-    /// Spent nullifier — value is `true`, key prevents replay.
     Nullifier(BytesN<32>),
 }
 
@@ -54,60 +38,25 @@ pub enum DataKey {
 #[contracttype]
 #[repr(u32)]
 pub enum Error {
-    /// Wrong caller, or contract already initialised.
     Unauthorized    = 1,
-    /// Contract has not been initialised yet.
     NotInitialized  = 2,
-    /// Groth16 pairing check failed.
     InvalidProof    = 3,
-    /// Nullifier has already been used (replay attack).
     NullifierReused = 4,
 }
 
 // ── Verification key ──────────────────────────────────────────────────────────
 //
-// All points below are real, curve-valid BN254 points taken from the
-// Ethereum EIP-197 canonical test vectors (go-ethereum bn256Pairing.json).
+// Real, curve-valid BN254 points from the Ethereum EIP-197 canonical test
+// vectors (go-ethereum bn256Pairing.json, "jeff1" test case).
 //
-// Self-consistent construction
-// ────────────────────────────
-// The Groth16 equation is:
-//   e(πA, πB) · e(-vkα, vkβ) · e(-vkX, vkγ) · e(-πC, vkδ) = 1
-//
-// From the "jeff1" test vector we know:
-//   e(A, B) · e(C, D) = 1                                    … (*)
-// where A, B, C, D are the four points extracted below.
-//
-// We set:
-//   vkα  = A,  vkβ  = B   →  e(-vkα, vkβ) = e(-A, B) = 1/e(A,B)
-//   vkγ  = B,  vkδ  = B   (same G2 point; replace with ceremony output)
-//   IC[0] = C, IC[1] = G1_INFINITY  →  vkX = C for any nullifier
-//
-// For the known test proof (πA=A, πB=B, πC=C, nullifier=0):
-//   e(A,B) · e(-A,B) · e(-C,B) · e(-C,B)
-//   = e(A,B)/e(A,B) · 1/e(C,B)² ≠ 1  — this doesn't close.
-//
-// Correct construction using (*):  set πA=A, πB=B, πC=zero, vkX=zero.
-// Then: e(A,B) · e(-A,B) · e(0,B) · e(0,B) = 1 · 1 · 1 = 1  ✓
-// But the point at infinity for πC means the prover proves nothing.
-//
-// The honest answer: a self-consistent VK for a *real* circuit requires
-// running the trusted setup.  What we provide here are real curve points
-// for structural correctness (the contract will not panic on encoding),
-// and a TRUSTED_SETUP_REQUIRED marker so no one mistakes this for mainnet.
-//
-// REPLACE ALL VK_* CONSTANTS with your trusted-setup output before mainnet.
+// REPLACE ALL VK_* CONSTANTS with trusted-setup ceremony output before mainnet.
 // See docs/circuit-spec.md for the exact format and tooling.
 
-// ── Real BN254 points (EIP-197 / jeff1 test vector) ──────────────────────────
-
-// vk_alpha: jeff1 pair-0 G1 point A  (curve-valid, from Ethereum test suite)
 const VK_ALPHA_G1: [u8; 64] = g1(
     hex32("1c76476f4def4bb94541d57ebba1193381ffa7aa76ada664dd31c16024c43f59"),
     hex32("3034dd2920f673e204fee2811c678745fc819b55d3e9d294e45c9b03a76aef41"),
 );
 
-// vk_beta: jeff1 pair-0 G2 point B  (x0‖x1‖y0‖y1, curve-valid)
 const VK_BETA_G2: [u8; 128] = g2(
     hex32("209dd15ebff5d46c4bd888e51a93cf99a7329636c63514396b4a452003a35bf7"),
     hex32("04bf11ca01483bfa8b34b43561848d28905960114c8ac04049af4b6315a41678"),
@@ -115,7 +64,7 @@ const VK_BETA_G2: [u8; 128] = g2(
     hex32("120a2a4cf30c1bf9845f20c6fe39e07ea2cce61f0c9bb048165fe5e4de877550"),
 );
 
-// vk_gamma: canonical BN254 G2 generator (well-known, curve-valid)
+// Canonical BN254 G2 generator — replace with ceremony output.
 const VK_GAMMA_G2: [u8; 128] = g2(
     hex32("198e9393920d483a7260bfb731fb5d25f1aa493335a9e71297e485b7aef312c2"),
     hex32("1800deef121f1e76426a00665e5c4479674322d4f75edadd46debd5cd992f6ed"),
@@ -123,17 +72,13 @@ const VK_GAMMA_G2: [u8; 128] = g2(
     hex32("12c85ea5db8c6deb4aab71808dcb408fe3d1e7690c43d37b4ce6cc0166fa7daa"),
 );
 
-// vk_delta: same as gamma (replace with ceremony output)
 const VK_DELTA_G2: [u8; 128] = VK_GAMMA_G2;
 
-// IC[0]: jeff1 pair-1 G1 point C  (curve-valid)
 const VK_IC_0_G1: [u8; 64] = g1(
     hex32("111e129f1cf1097710d41c4ac70fcdfa5ba2023c6ff1cbeac322de49d1b6df7c"),
     hex32("2032c61a830e3c17286de9462bf242fca2883585b93870a73853face6a6bf411"),
 );
 
-// IC[1]: jeff1 pair-1 G1 point C (same; nullifier scalar scales this)
-// Replace with the actual IC[1] from your trusted setup.
 const VK_IC_1_G1: [u8; 64] = VK_IC_0_G1;
 
 // ── Contract ──────────────────────────────────────────────────────────────────
@@ -151,46 +96,28 @@ impl ComplianceShield {
         env.storage().instance().set(&DataKey::Authority, &authority);
         env.storage().instance().set(&DataKey::MerkleRoot, &merkle_root);
         env.storage().instance().extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND_TO);
-
-        env.events().publish(
-            (symbol_short!("init"), symbol_short!("shield")),
-            merkle_root,
-        );
+        env.events().publish((symbol_short!("init"), symbol_short!("shield")), merkle_root);
     }
 
     /// Authority rotates the Merkle root after a new KYC batch.
     pub fn update_root(env: Env, new_root: BytesN<32>) {
         let authority: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::Authority)
+            .storage().instance().get(&DataKey::Authority)
             .unwrap_or_else(|| panic_with_error!(&env, Error::NotInitialized));
         authority.require_auth();
         env.storage().instance().set(&DataKey::MerkleRoot, &new_root);
         env.storage().instance().extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND_TO);
-
-        env.events().publish(
-            (symbol_short!("root"), symbol_short!("updated")),
-            new_root,
-        );
+        env.events().publish((symbol_short!("root"), symbol_short!("updated")), new_root);
     }
 
     /// Verify a Groth16 proof that the caller belongs to the KYC Merkle tree.
     ///
-    /// # Parameters
-    /// - `proof_a`   – π_A  (G1, 64 bytes)
-    /// - `proof_b`   – π_B  (G2, 128 bytes)
-    /// - `proof_c`   – π_C  (G1, 64 bytes)
-    /// - `nullifier` – Poseidon(user_secret ‖ merkle_root) as a 32-byte big-endian scalar
+    /// Groth16 equation:
+    /// `e(πA, πB) · e(−vkα, vkβ) · e(−vkX, vkγ) · e(−πC, vkδ) == 1`
+    /// where `vkX = IC[0] + nullifier * IC[1]`.
     ///
-    /// # Groth16 verification equation
-    /// ```text
-    /// e(π_A, π_B) · e(−vk_α, vk_β) · e(−vk_x, vk_γ) · e(−π_C, vk_δ) == 1
-    /// ```
-    /// where `vk_x = IC[0] + nullifier * IC[1]` (public input accumulator).
-    ///
-    /// Emits an `identity_verified` event on success.
-    /// Panics with the appropriate `Error` code on failure.
+    /// Emits `("identity", "verified")` on success.
+    /// Panics with a typed `Error` code on failure.
     pub fn verify_identity(
         env:       Env,
         proof_a:   BytesN<64>,
@@ -198,7 +125,7 @@ impl ComplianceShield {
         proof_c:   BytesN<64>,
         nullifier: BytesN<32>,
     ) {
-        // ── 1. Replay-attack guard ────────────────────────────────────────────
+        // 1. Replay guard
         let nul_key = DataKey::Nullifier(nullifier.clone());
         if env.storage().persistent().has(&nul_key) {
             panic_with_error!(&env, Error::NullifierReused);
@@ -206,18 +133,12 @@ impl ComplianceShield {
 
         let bn254 = env.crypto().bn254();
 
-        // ── 2. Decode proof points ────────────────────────────────────────────
-        let pi_a = Bn254G1Affine::from_array(&env, &{
-            let mut b = [0u8; 64]; proof_a.copy_into_slice(&mut b); b
-        });
-        let pi_b = Bn254G2Affine::from_array(&env, &{
-            let mut b = [0u8; 128]; proof_b.copy_into_slice(&mut b); b
-        });
-        let pi_c = Bn254G1Affine::from_array(&env, &{
-            let mut b = [0u8; 64]; proof_c.copy_into_slice(&mut b); b
-        });
+        // 2. Decode proof points
+        let pi_a = Bn254G1Affine::from_array(&env, &{ let mut b = [0u8; 64];  proof_a.copy_into_slice(&mut b); b });
+        let pi_b = Bn254G2Affine::from_array(&env, &{ let mut b = [0u8; 128]; proof_b.copy_into_slice(&mut b); b });
+        let pi_c = Bn254G1Affine::from_array(&env, &{ let mut b = [0u8; 64];  proof_c.copy_into_slice(&mut b); b });
 
-        // ── 3. Build VK points ────────────────────────────────────────────────
+        // 3. Build VK points
         let vk_alpha = Bn254G1Affine::from_array(&env, &VK_ALPHA_G1);
         let vk_beta  = Bn254G2Affine::from_array(&env, &VK_BETA_G2);
         let vk_gamma = Bn254G2Affine::from_array(&env, &VK_GAMMA_G2);
@@ -225,53 +146,40 @@ impl ComplianceShield {
         let ic_0     = Bn254G1Affine::from_array(&env, &VK_IC_0_G1);
         let ic_1     = Bn254G1Affine::from_array(&env, &VK_IC_1_G1);
 
-        // ── 4. Public input accumulator: vk_x = IC[0] + nullifier * IC[1] ────
-        let nullifier_scalar: Bn254Fr = {
+        // 4. Public input accumulator: vkX = IC[0] + nullifier * IC[1]
+        let scalar: Fr = {
             let mut b = [0u8; 32];
             nullifier.copy_into_slice(&mut b);
             U256::from_be_bytes(&env, &BytesN::from_array(&env, &b)).into()
         };
-        let vk_x = ic_0 + bn254.g1_mul(&ic_1, &nullifier_scalar);
+        let vk_x = ic_0 + bn254.g1_mul(&ic_1, &scalar);
 
-        // ── 5. Groth16 pairing check ──────────────────────────────────────────
-        //
-        // e(π_A, π_B) · e(−vk_α, vk_β) · e(−vk_x, vk_γ) · e(−π_C, vk_δ) == 1
+        // 5. Groth16 pairing check
         let valid = bn254.pairing_check(
             vec![&env, pi_a,    -vk_alpha, -vk_x,    -pi_c   ],
             vec![&env, pi_b,     vk_beta,   vk_gamma,  vk_delta],
         );
-
         if !valid {
             panic_with_error!(&env, Error::InvalidProof);
         }
 
-        // ── 6. Persist nullifier + bump TTL ───────────────────────────────────
+        // 6. Persist nullifier + bump TTL
         env.storage().persistent().set(&nul_key, &true);
-        env.storage().persistent().extend_ttl(
-            &nul_key,
-            NULLIFIER_TTL_THRESHOLD,
-            NULLIFIER_TTL_EXTEND_TO,
-        );
+        env.storage().persistent().extend_ttl(&nul_key, NULLIFIER_TTL_THRESHOLD, NULLIFIER_TTL_EXTEND_TO);
 
-        // ── 7. Emit event (nullifier only — no PII) ───────────────────────────
-        env.events().publish(
-            (symbol_short!("identity"), symbol_short!("verified")),
-            nullifier,
-        );
+        // 7. Emit event (nullifier only — zero PII)
+        env.events().publish((symbol_short!("identity"), symbol_short!("verified")), nullifier);
     }
 
     /// Read the current Merkle root (public).
     pub fn merkle_root(env: Env) -> BytesN<32> {
-        env.storage()
-            .instance()
-            .get(&DataKey::MerkleRoot)
+        env.storage().instance().get(&DataKey::MerkleRoot)
             .unwrap_or_else(|| panic_with_error!(&env, Error::NotInitialized))
     }
 }
 
 // ── Compile-time helpers ──────────────────────────────────────────────────────
 
-/// Decode a 64-char hex literal into a [u8; 32] at compile time.
 const fn hex32(s: &str) -> [u8; 32] {
     let b = s.as_bytes();
     assert!(b.len() == 64, "hex32 requires exactly 64 hex chars");
@@ -293,23 +201,21 @@ const fn nibble(c: u8) -> u8 {
     }
 }
 
-/// Concatenate two [u8; 32] into a [u8; 64] G1 point.
 const fn g1(x: [u8; 32], y: [u8; 32]) -> [u8; 64] {
     let mut out = [0u8; 64];
     let mut i = 0usize;
-    while i < 32 { out[i]      = x[i]; i += 1; }
+    while i < 32 { out[i]      = x[i];      i += 1; }
     while i < 64 { out[i] = y[i - 32]; i += 1; }
     out
 }
 
-/// Concatenate four [u8; 32] into a [u8; 128] G2 point.
 const fn g2(x0: [u8; 32], x1: [u8; 32], y0: [u8; 32], y1: [u8; 32]) -> [u8; 128] {
     let mut out = [0u8; 128];
     let mut i = 0usize;
-    while i < 32  { out[i]       = x0[i];       i += 1; }
-    while i < 64  { out[i]       = x1[i -  32]; i += 1; }
-    while i < 96  { out[i]       = y0[i -  64]; i += 1; }
-    while i < 128 { out[i]       = y1[i -  96]; i += 1; }
+    while i < 32  { out[i] = x0[i];       i += 1; }
+    while i < 64  { out[i] = x1[i -  32]; i += 1; }
+    while i < 96  { out[i] = y0[i -  64]; i += 1; }
+    while i < 128 { out[i] = y1[i -  96]; i += 1; }
     out
 }
 
@@ -322,7 +228,7 @@ mod tests {
 
     fn setup() -> (Env, Address, Address) {
         let env = Env::default();
-        let contract_id = env.register_contract(None, ComplianceShield);
+        let contract_id = env.register(ComplianceShield, ());
         let client = ComplianceShieldClient::new(&env, &contract_id);
         let authority = Address::generate(&env);
         let root = BytesN::from_array(&env, &[0xabu8; 32]);
@@ -333,7 +239,7 @@ mod tests {
     #[test]
     fn test_initialize_and_root() {
         let env = Env::default();
-        let contract_id = env.register_contract(None, ComplianceShield);
+        let contract_id = env.register(ComplianceShield, ());
         let client = ComplianceShieldClient::new(&env, &contract_id);
         let authority = Address::generate(&env);
         let root = BytesN::from_array(&env, &[1u8; 32]);
@@ -362,30 +268,25 @@ mod tests {
     #[test]
     fn test_update_root_requires_authority() {
         let (env, contract_id, _) = setup();
-        // No mock_all_auths — auth will fail
         let client = ComplianceShieldClient::new(&env, &contract_id);
-        let new_root = BytesN::from_array(&env, &[3u8; 32]);
-        assert!(client.try_update_root(&new_root).is_err());
+        assert!(client.try_update_root(&BytesN::from_array(&env, &[3u8; 32])).is_err());
     }
 
     #[test]
     fn test_nullifier_replay_rejected() {
         let (env, contract_id, _) = setup();
         let client = ComplianceShieldClient::new(&env, &contract_id);
-
         let proof_a   = BytesN::from_array(&env, &[0u8; 64]);
         let proof_b   = BytesN::from_array(&env, &[0u8; 128]);
         let proof_c   = BytesN::from_array(&env, &[0u8; 64]);
         let nullifier = BytesN::from_array(&env, &[0x42u8; 32]);
 
-        // First call fails at pairing (invalid proof), not at replay guard.
+        // First call fails at pairing — not at replay guard.
         let _ = client.try_verify_identity(&proof_a, &proof_b, &proof_c, &nullifier);
 
         // Inject nullifier as if a prior valid proof succeeded.
         env.as_contract(&contract_id, || {
-            env.storage()
-                .persistent()
-                .set(&DataKey::Nullifier(nullifier.clone()), &true);
+            env.storage().persistent().set(&DataKey::Nullifier(nullifier.clone()), &true);
         });
 
         // Second call must fail with NullifierReused (error 4).
@@ -397,30 +298,19 @@ mod tests {
     }
 
     #[test]
-    fn test_nullifier_ttl_set_on_success() {
-        // This test verifies that after a successful verify_identity the
-        // nullifier entry exists in persistent storage with a non-zero TTL.
-        // We cannot easily produce a valid Groth16 proof in unit tests, so we
-        // inject the nullifier directly and check TTL behaviour.
+    fn test_nullifier_ttl_extended() {
         let (env, contract_id, _) = setup();
         env.ledger().with_mut(|li| {
-            li.sequence_number    = 100_000;
+            li.sequence_number          = 100_000;
             li.min_persistent_entry_ttl = 500;
-            li.max_entry_ttl      = 10_000_000;
+            li.max_entry_ttl            = 10_000_000;
         });
-
         let nullifier = BytesN::from_array(&env, &[0x99u8; 32]);
         let key = DataKey::Nullifier(nullifier.clone());
-
         env.as_contract(&contract_id, || {
             env.storage().persistent().set(&key, &true);
-            env.storage().persistent().extend_ttl(
-                &key,
-                NULLIFIER_TTL_THRESHOLD,
-                NULLIFIER_TTL_EXTEND_TO,
-            );
-            let ttl = env.storage().persistent().get_ttl(&key);
-            assert_eq!(ttl, NULLIFIER_TTL_EXTEND_TO);
+            env.storage().persistent().extend_ttl(&key, NULLIFIER_TTL_THRESHOLD, NULLIFIER_TTL_EXTEND_TO);
+            assert_eq!(env.storage().persistent().get_ttl(&key), NULLIFIER_TTL_EXTEND_TO);
         });
     }
 }

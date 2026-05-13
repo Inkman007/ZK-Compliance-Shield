@@ -1,16 +1,16 @@
 [package]
 name    = "compliance-shield"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 
 [lib]
 crate-type = ["cdylib"]
 
 [dependencies]
-soroban-sdk = { version = "26.0.0", features = ["alloc"] }
+soroban-sdk = { version = "25.3.1", features = ["alloc"] }
 
 [dev-dependencies]
-soroban-sdk = { version = "26.0.0", features = ["testutils", "alloc"] }
+soroban-sdk = { version = "25.3.1", features = ["testutils", "alloc"] }
 
 [profile.release]
 opt-level        = "z"

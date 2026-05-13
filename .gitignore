@@ -1,6 +1,6 @@
 # Rust / Cargo
 target/
-Cargo.lock
+# Note: Cargo.lock is intentionally tracked for reproducible builds.
 
 # Stellar CLI
 .stellar/

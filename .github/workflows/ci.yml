@@ -20,7 +20,7 @@ jobs:
       - name: Install Rust toolchain (pinned)
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: "1.82.0"
+          toolchain: "1.84.0"
           targets: wasm32v1-none
           components: rustfmt, clippy
 
@@ -37,7 +37,7 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all -- --check
 
-      - name: Clippy (host target, for tests)
+      - name: Clippy (host target)
         run: cargo clippy --all-targets -- -D warnings
 
       - name: Run tests

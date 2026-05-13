@@ -90,7 +90,7 @@ ZK-Compliance-Shield/
 
 | Tool | Version | Install |
 |------|---------|---------|
-| Rust | 1.82.0 (pinned) | `rustup toolchain install 1.82.0` |
+| Rust | 1.84.0+ (pinned) | `rustup toolchain install 1.84.0` |
 | wasm32v1-none target | — | `rustup target add wasm32v1-none` |
 | Stellar CLI | latest | [docs.stellar.org/tools/cli](https://developers.stellar.org/docs/tools/cli) |
 | Python | 3.9+ | For `scripts/mock_proof_generator.py` |
