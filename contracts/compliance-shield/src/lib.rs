@@ -66,50 +66,75 @@ pub enum Error {
 
 // ── Verification key ──────────────────────────────────────────────────────────
 //
-// Hard-coded from the trusted-setup ceremony output.
-// Replace all constants with real snarkjs / bellman output before mainnet.
+// All points below are real, curve-valid BN254 points taken from the
+// Ethereum EIP-197 canonical test vectors (go-ethereum bn256Pairing.json).
 //
-// Layout (all big-endian, uncompressed):
-//   VK_ALPHA_G1  : G1 (64 bytes)
-//   VK_BETA_G2   : G2 (128 bytes)
-//   VK_GAMMA_G2  : G2 (128 bytes)
-//   VK_DELTA_G2  : G2 (128 bytes)
-//   VK_IC_0_G1   : G1 (64 bytes)  — constant term of the input commitment
-//   VK_IC_1_G1   : G1 (64 bytes)  — coefficient for public input 0 (nullifier)
+// Self-consistent construction
+// ────────────────────────────
+// The Groth16 equation is:
+//   e(πA, πB) · e(-vkα, vkβ) · e(-vkX, vkγ) · e(-πC, vkδ) = 1
 //
-// Using BN254 generator points as structural placeholders.
+// From the "jeff1" test vector we know:
+//   e(A, B) · e(C, D) = 1                                    … (*)
+// where A, B, C, D are the four points extracted below.
+//
+// We set:
+//   vkα  = A,  vkβ  = B   →  e(-vkα, vkβ) = e(-A, B) = 1/e(A,B)
+//   vkγ  = B,  vkδ  = B   (same G2 point; replace with ceremony output)
+//   IC[0] = C, IC[1] = G1_INFINITY  →  vkX = C for any nullifier
+//
+// For the known test proof (πA=A, πB=B, πC=C, nullifier=0):
+//   e(A,B) · e(-A,B) · e(-C,B) · e(-C,B)
+//   = e(A,B)/e(A,B) · 1/e(C,B)² ≠ 1  — this doesn't close.
+//
+// Correct construction using (*):  set πA=A, πB=B, πC=zero, vkX=zero.
+// Then: e(A,B) · e(-A,B) · e(0,B) · e(0,B) = 1 · 1 · 1 = 1  ✓
+// But the point at infinity for πC means the prover proves nothing.
+//
+// The honest answer: a self-consistent VK for a *real* circuit requires
+// running the trusted setup.  What we provide here are real curve points
+// for structural correctness (the contract will not panic on encoding),
+// and a TRUSTED_SETUP_REQUIRED marker so no one mistakes this for mainnet.
+//
+// REPLACE ALL VK_* CONSTANTS with your trusted-setup output before mainnet.
+// See docs/circuit-spec.md for the exact format and tooling.
 
-// G1 generator: (1, 2)
+// ── Real BN254 points (EIP-197 / jeff1 test vector) ──────────────────────────
+
+// vk_alpha: jeff1 pair-0 G1 point A  (curve-valid, from Ethereum test suite)
 const VK_ALPHA_G1: [u8; 64] = g1(
-    hex32("0000000000000000000000000000000000000000000000000000000000000001"),
-    hex32("0000000000000000000000000000000000000000000000000000000000000002"),
+    hex32("1c76476f4def4bb94541d57ebba1193381ffa7aa76ada664dd31c16024c43f59"),
+    hex32("3034dd2920f673e204fee2811c678745fc819b55d3e9d294e45c9b03a76aef41"),
 );
 
-// G2 generator
+// vk_beta: jeff1 pair-0 G2 point B  (x0‖x1‖y0‖y1, curve-valid)
 const VK_BETA_G2: [u8; 128] = g2(
+    hex32("209dd15ebff5d46c4bd888e51a93cf99a7329636c63514396b4a452003a35bf7"),
+    hex32("04bf11ca01483bfa8b34b43561848d28905960114c8ac04049af4b6315a41678"),
+    hex32("2bb8324af6cfc93537a2ad1a445cfd0ca2a71acd7ac41fadbf933c2a51be344d"),
+    hex32("120a2a4cf30c1bf9845f20c6fe39e07ea2cce61f0c9bb048165fe5e4de877550"),
+);
+
+// vk_gamma: canonical BN254 G2 generator (well-known, curve-valid)
+const VK_GAMMA_G2: [u8; 128] = g2(
     hex32("198e9393920d483a7260bfb731fb5d25f1aa493335a9e71297e485b7aef312c2"),
     hex32("1800deef121f1e76426a00665e5c4479674322d4f75edadd46debd5cd992f6ed"),
     hex32("090689d0585ff075ec9e99ad690c3395bc4b313370b38ef355acdadcd122975b"),
     hex32("12c85ea5db8c6deb4aab71808dcb408fe3d1e7690c43d37b4ce6cc0166fa7daa"),
 );
 
-// Placeholder: same as beta (replace with real gamma from trusted setup)
-const VK_GAMMA_G2: [u8; 128] = VK_BETA_G2;
+// vk_delta: same as gamma (replace with ceremony output)
+const VK_DELTA_G2: [u8; 128] = VK_GAMMA_G2;
 
-// Placeholder: same as beta (replace with real delta from trusted setup)
-const VK_DELTA_G2: [u8; 128] = VK_BETA_G2;
-
-// IC[0]: constant term — G1 generator (placeholder)
-const VK_IC_0_G1: [u8; 64] = VK_ALPHA_G1;
-
-// IC[1]: nullifier coefficient — 2*G1 (placeholder)
-// 2*G = (0x030644e72e131a029b85045b68181585d2833e84879b9709143e1f593f0000001,
-//        0x0000000000000000000000000000000000000000000000000000000000000002) — not real 2G
-// Using a distinct placeholder so IC[0] != IC[1]
-const VK_IC_1_G1: [u8; 64] = g1(
-    hex32("030644e72e131a029b85045b68181585d2833e84879b9709143e1f593f0000001"),
-    hex32("0000000000000000000000000000000000000000000000000000000000000002"),
+// IC[0]: jeff1 pair-1 G1 point C  (curve-valid)
+const VK_IC_0_G1: [u8; 64] = g1(
+    hex32("111e129f1cf1097710d41c4ac70fcdfa5ba2023c6ff1cbeac322de49d1b6df7c"),
+    hex32("2032c61a830e3c17286de9462bf242fca2883585b93870a73853face6a6bf411"),
 );
+
+// IC[1]: jeff1 pair-1 G1 point C (same; nullifier scalar scales this)
+// Replace with the actual IC[1] from your trusted setup.
+const VK_IC_1_G1: [u8; 64] = VK_IC_0_G1;
 
 // ── Contract ──────────────────────────────────────────────────────────────────
 

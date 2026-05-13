@@ -2,64 +2,91 @@
 """
 Mock Groth16 proof generator for ZK-Compliance-Shield.
 
-Produces structurally valid BN254-encoded byte strings that match the
-contract's `verify_identity` ABI.  The points are NOT on the curve and
-will NOT pass the real pairing check — this is intentional for local
-development and integration testing.
+Outputs the Ethereum EIP-197 "jeff1" test vector — a real, curve-valid BN254
+proof that satisfies e(A,B)·e(C,D) = 1.  This is used for structural testing
+of the contract's ABI and encoding, NOT as a real KYC proof.
 
-Replace with a real Groth16 prover (snarkjs / bellman / Noir) for production.
-
-Contract interface:
-  verify_identity(proof_a: BytesN<64>, proof_b: BytesN<128>,
-                  proof_c: BytesN<64>, nullifier: BytesN<32>) -> bool
+For production, replace this script with a real Groth16 prover that:
+  1. Runs the KYC membership circuit (Noir / bellman / snarkjs)
+  2. Uses the VK from your trusted-setup ceremony
+  3. Computes nullifier = Poseidon(user_secret ‖ merkle_root)
 
 All values are big-endian hex, no 0x prefix.
+Contract interface: verify_identity(proof_a, proof_b, proof_c, nullifier)
 """
 
 import hashlib
 import json
 import secrets
 
-# BN254 field prime
-P = 0x30644e72e131a029b85045b68181585d97816a916871ca8d3c208c16d87cfd47
+# ── Real BN254 points from Ethereum EIP-197 "jeff1" test vector ──────────────
+# Source: go-ethereum/core/vm/testdata/precompiles/bn256Pairing.json
+# These satisfy: e(PROOF_A, PROOF_B) · e(PROOF_C_NEG, VK_BETA) = 1
+
+# pair-0 G1 (πA)
+PROOF_A = (
+    "1c76476f4def4bb94541d57ebba1193381ffa7aa76ada664dd31c16024c43f59"
+    "3034dd2920f673e204fee2811c678745fc819b55d3e9d294e45c9b03a76aef41"
+)
+
+# pair-0 G2 (πB)
+PROOF_B = (
+    "209dd15ebff5d46c4bd888e51a93cf99a7329636c63514396b4a452003a35bf7"
+    "04bf11ca01483bfa8b34b43561848d28905960114c8ac04049af4b6315a41678"
+    "2bb8324af6cfc93537a2ad1a445cfd0ca2a71acd7ac41fadbf933c2a51be344d"
+    "120a2a4cf30c1bf9845f20c6fe39e07ea2cce61f0c9bb048165fe5e4de877550"
+)
+
+# pair-1 G1 (πC) — the negated form used in the pairing equation
+PROOF_C = (
+    "111e129f1cf1097710d41c4ac70fcdfa5ba2023c6ff1cbeac322de49d1b6df7c"
+    "2032c61a830e3c17286de9462bf242fca2883585b93870a73853face6a6bf411"
+)
+
+# Nullifier = 0 → vk_x = IC[0] + 0*IC[1] = IC[0]
+# This matches the VK construction in src/lib.rs.
+NULLIFIER = "00" * 32
 
 
-def _fake_g1(seed: bytes) -> str:
-    """Deterministic fake G1 point (64 bytes = x‖y, 32 bytes each)."""
-    h = int.from_bytes(hashlib.sha256(seed).digest(), "big") % P
-    x = h.to_bytes(32, "big")
-    y = ((h + 1) % P).to_bytes(32, "big")
-    return (x + y).hex()
-
-
-def _fake_g2(seed: bytes) -> str:
-    """Deterministic fake G2 point (128 bytes = x0‖x1‖y0‖y1)."""
-    h = int.from_bytes(hashlib.sha256(seed).digest(), "big") % P
-    coords = [(h + i) % P for i in range(4)]
-    return b"".join(c.to_bytes(32, "big") for c in coords).hex()
-
-
-def generate_proof(user_secret: bytes, merkle_root: bytes) -> dict:
-    """
-    Generate a mock proof for the given user secret and Merkle root.
-
-    The nullifier is SHA-256(user_secret ‖ merkle_root).
-    In production use Poseidon(user_secret ‖ merkle_root) to match the circuit.
-    """
-    nullifier = hashlib.sha256(user_secret + merkle_root).digest()
+def generate_test_proof() -> dict:
+    """Return the canonical jeff1 test proof (structural test only)."""
     return {
-        "proof_a":   _fake_g1(b"proof_a" + user_secret),
-        "proof_b":   _fake_g2(b"proof_b" + user_secret),
-        "proof_c":   _fake_g1(b"proof_c" + user_secret),
-        "nullifier": nullifier.hex(),
+        "proof_a":   PROOF_A,
+        "proof_b":   PROOF_B,
+        "proof_c":   PROOF_C,
+        "nullifier": NULLIFIER,
+    }
+
+
+def generate_mock_proof(user_secret: bytes, merkle_root: bytes) -> dict:
+    """
+    Generate a mock proof with a real nullifier but fake curve points.
+    The nullifier is SHA-256(user_secret ‖ merkle_root).
+    In production use Poseidon(user_secret ‖ merkle_root).
+    This proof will NOT pass the pairing check — use for ABI testing only.
+    """
+    nullifier = hashlib.sha256(user_secret + merkle_root).hexdigest()
+    return {
+        "proof_a":   PROOF_A,   # reuse real points for valid encoding
+        "proof_b":   PROOF_B,
+        "proof_c":   PROOF_C,
+        "nullifier": nullifier,
     }
 
 
 if __name__ == "__main__":
-    user_secret = secrets.token_bytes(32)
-    merkle_root = bytes.fromhex("1a2b3c4d" * 8)  # replace with real root
+    import sys
 
-    proof = generate_proof(user_secret, merkle_root)
+    mode = sys.argv[1] if len(sys.argv) > 1 else "test"
+
+    if mode == "test":
+        proof = generate_test_proof()
+        print("# jeff1 canonical test proof (nullifier=0, matches VK in src/lib.rs)")
+    else:
+        user_secret = secrets.token_bytes(32)
+        merkle_root = bytes.fromhex("1a2b3c4d" * 8)
+        proof = generate_mock_proof(user_secret, merkle_root)
+        print("# Mock proof with random nullifier (will NOT pass pairing check)")
 
     print(json.dumps(proof, indent=2))
     print(

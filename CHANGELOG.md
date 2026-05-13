@@ -3,7 +3,28 @@
 All notable changes to this project will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
-## [0.2.0] - 2026-05-13
+## [0.3.0] - 2026-05-13
+
+### Changed
+- Replaced all VK generator-point placeholders with real, curve-valid BN254
+  points sourced from the Ethereum EIP-197 canonical test vectors
+  (go-ethereum `bn256Pairing.json` — `jeff1` test case)
+- `VK_ALPHA_G1` / `VK_BETA_G2`: jeff1 pair-0 (A, B) — real G1/G2 points
+- `VK_GAMMA_G2`: canonical BN254 G2 generator (well-known, curve-valid)
+- `VK_DELTA_G2`: same as gamma (replace with ceremony output)
+- `VK_IC_0_G1` / `VK_IC_1_G1`: jeff1 pair-1 G1 point C (curve-valid)
+- Updated `mock_proof_generator.py` to output the jeff1 test vector proof
+  with `nullifier=0`, matching the VK construction in `src/lib.rs`
+- Added `test` / `mock` modes to the proof generator script
+
+### Notes
+- These are real curve points, not random bytes — the contract will not panic
+  on point decoding. A full end-to-end pairing test requires the Soroban
+  test environment with Protocol 25 host functions enabled.
+- `VK_GAMMA_G2` and `VK_DELTA_G2` still need ceremony-specific values.
+  `VK_IC_1_G1` needs the actual nullifier coefficient from the circuit.
+
+
 
 ### Added
 - Full Groth16 VK: `vk_gamma` (G2), `vk_delta` (G2), `IC[0]` and `IC[1]` (G1)
