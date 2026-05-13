@@ -8,28 +8,27 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ### Changed
 - Replaced all VK generator-point placeholders with real, curve-valid BN254
   points sourced from the Ethereum EIP-197 canonical test vectors
-  (go-ethereum `bn256Pairing.json` — `jeff1` test case)
-- `VK_ALPHA_G1` / `VK_BETA_G2`: jeff1 pair-0 (A, B) — real G1/G2 points
+  (`go-ethereum/bn256Pairing.json` — `jeff1` test case)
+- `VK_ALPHA_G1` / `VK_BETA_G2`: jeff1 pair-0 G1/G2 points (A, B)
 - `VK_GAMMA_G2`: canonical BN254 G2 generator (well-known, curve-valid)
 - `VK_DELTA_G2`: same as gamma (replace with ceremony output)
 - `VK_IC_0_G1` / `VK_IC_1_G1`: jeff1 pair-1 G1 point C (curve-valid)
-- Updated `mock_proof_generator.py` to output the jeff1 test vector proof
-  with `nullifier=0`, matching the VK construction in `src/lib.rs`
-- Added `test` / `mock` modes to the proof generator script
+- `mock_proof_generator.py` now outputs the jeff1 test vector proof
+  (`nullifier=0`) and supports `test` / `mock` modes
 
 ### Notes
-- These are real curve points, not random bytes — the contract will not panic
-  on point decoding. A full end-to-end pairing test requires the Soroban
-  test environment with Protocol 25 host functions enabled.
-- `VK_GAMMA_G2` and `VK_DELTA_G2` still need ceremony-specific values.
-  `VK_IC_1_G1` needs the actual nullifier coefficient from the circuit.
+- All VK points are real curve points — the contract will not panic on decoding.
+- `VK_GAMMA_G2`, `VK_DELTA_G2`, and `VK_IC_1_G1` still require ceremony-specific
+  values before mainnet deployment.
 
+---
 
+## [0.2.0] - 2026-05-13
 
 ### Added
 - Full Groth16 VK: `vk_gamma` (G2), `vk_delta` (G2), `IC[0]` and `IC[1]` (G1)
 - Public input accumulator: `vk_x = IC[0] + nullifier * IC[1]`
-- Contract events: `identity_verified`, `root_updated`, `init`
+- Contract events: `identity_verified`, `root_updated`, `init/shield`
 - Instance storage TTL bump on every write (prevents contract expiry)
 - `contractmeta!` declarations (name, description, version)
 - `rust-toolchain.toml` pinning Rust 1.82.0 + `wasm32v1-none`
@@ -42,15 +41,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Changed
 - Upgraded to Soroban SDK v26 (Protocol 25 / X-Ray)
-- `verify_identity` now returns `()` instead of `bool` (idiomatic Soroban)
+- `verify_identity` returns `()` instead of `bool` (idiomatic Soroban)
 - All storage keys use `DataKey` enum (was mixed `symbol_short!` + enum)
 - G1 negation uses SDK `Neg` trait instead of manual field arithmetic
 - Mock proof generator outputs only the 4 fields the contract accepts
 
 ### Fixed
-- Pairing equation was incorrect (missing γ/δ, reused vk_β for all G2 slots)
+- Pairing equation was incorrect (missing γ/δ, reused `vk_β` for all G2 slots)
 - Nullifier was not cryptographically bound to the proof (missing accumulator)
 - Nullifier TTL was never bumped (expiry-based replay was possible)
+
+---
 
 ## [0.1.0] - 2026-05-13
 
