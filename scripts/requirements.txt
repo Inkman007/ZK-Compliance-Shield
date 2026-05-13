@@ -1,0 +1,9 @@
+# Python dependencies for ZK-Compliance-Shield scripts.
+# Install with: pip install -r scripts/requirements.txt
+#
+# The mock_proof_generator.py uses only the standard library (no deps needed).
+# Add real prover dependencies here when replacing the mock:
+
+# Example for a real Groth16 prover integration:
+# py_ecc==7.0.0          # BN254 / pairing library
+# snarkjs==0.7.4         # if calling snarkjs via subprocess

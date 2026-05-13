@@ -3,7 +3,7 @@
 use soroban_sdk::{
     contract, contractimpl, contractmeta, contracttype,
     crypto::bn254::{Bn254Fr, Bn254G1Affine, Bn254G2Affine},
-    panic_with_error,
+    panic_with_error, symbol_short,
     vec,
     Address, BytesN, Env, U256,
 };
@@ -31,6 +31,10 @@ contractmeta!(
 
 const NULLIFIER_TTL_THRESHOLD: u32 = 518_400;   // 30 days
 const NULLIFIER_TTL_EXTEND_TO: u32 = 6_307_200; // ~1 year
+
+// Instance storage (Authority + MerkleRoot) must also stay alive.
+const INSTANCE_TTL_THRESHOLD: u32 = 518_400;   // 30 days
+const INSTANCE_TTL_EXTEND_TO: u32 = 6_307_200; // ~1 year
 
 // ── Storage keys ─────────────────────────────────────────────────────────────
 
@@ -121,6 +125,12 @@ impl ComplianceShield {
         }
         env.storage().instance().set(&DataKey::Authority, &authority);
         env.storage().instance().set(&DataKey::MerkleRoot, &merkle_root);
+        env.storage().instance().extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND_TO);
+
+        env.events().publish(
+            (symbol_short!("init"), symbol_short!("shield")),
+            merkle_root,
+        );
     }
 
     /// Authority rotates the Merkle root after a new KYC batch.
@@ -132,6 +142,12 @@ impl ComplianceShield {
             .unwrap_or_else(|| panic_with_error!(&env, Error::NotInitialized));
         authority.require_auth();
         env.storage().instance().set(&DataKey::MerkleRoot, &new_root);
+        env.storage().instance().extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND_TO);
+
+        env.events().publish(
+            (symbol_short!("root"), symbol_short!("updated")),
+            new_root,
+        );
     }
 
     /// Verify a Groth16 proof that the caller belongs to the KYC Merkle tree.
@@ -148,14 +164,15 @@ impl ComplianceShield {
     /// ```
     /// where `vk_x = IC[0] + nullifier * IC[1]` (public input accumulator).
     ///
-    /// Returns `true` on success; panics with the appropriate `Error` otherwise.
+    /// Emits an `identity_verified` event on success.
+    /// Panics with the appropriate `Error` code on failure.
     pub fn verify_identity(
         env:       Env,
         proof_a:   BytesN<64>,
         proof_b:   BytesN<128>,
         proof_c:   BytesN<64>,
         nullifier: BytesN<32>,
-    ) -> bool {
+    ) {
         // ── 1. Replay-attack guard ────────────────────────────────────────────
         let nul_key = DataKey::Nullifier(nullifier.clone());
         if env.storage().persistent().has(&nul_key) {
@@ -184,9 +201,6 @@ impl ComplianceShield {
         let ic_1     = Bn254G1Affine::from_array(&env, &VK_IC_1_G1);
 
         // ── 4. Public input accumulator: vk_x = IC[0] + nullifier * IC[1] ────
-        //
-        // The nullifier is the sole public input to the circuit.
-        // We treat the 32-byte nullifier as a big-endian BN254 scalar (Fr).
         let nullifier_scalar: Bn254Fr = {
             let mut b = [0u8; 32];
             nullifier.copy_into_slice(&mut b);
@@ -197,8 +211,6 @@ impl ComplianceShield {
         // ── 5. Groth16 pairing check ──────────────────────────────────────────
         //
         // e(π_A, π_B) · e(−vk_α, vk_β) · e(−vk_x, vk_γ) · e(−π_C, vk_δ) == 1
-        //
-        // G1 negation uses the SDK's Neg trait (no manual field arithmetic).
         let valid = bn254.pairing_check(
             vec![&env, pi_a,    -vk_alpha, -vk_x,    -pi_c   ],
             vec![&env, pi_b,     vk_beta,   vk_gamma,  vk_delta],
@@ -216,7 +228,11 @@ impl ComplianceShield {
             NULLIFIER_TTL_EXTEND_TO,
         );
 
-        true
+        // ── 7. Emit event (nullifier only — no PII) ───────────────────────────
+        env.events().publish(
+            (symbol_short!("identity"), symbol_short!("verified")),
+            nullifier,
+        );
     }
 
     /// Read the current Merkle root (public).
@@ -332,24 +348,22 @@ mod tests {
         let (env, contract_id, _) = setup();
         let client = ComplianceShieldClient::new(&env, &contract_id);
 
-        // Build a minimal valid-looking call (will fail pairing, but we test
-        // the replay guard fires before the pairing check on second call).
         let proof_a   = BytesN::from_array(&env, &[0u8; 64]);
         let proof_b   = BytesN::from_array(&env, &[0u8; 128]);
         let proof_c   = BytesN::from_array(&env, &[0u8; 64]);
         let nullifier = BytesN::from_array(&env, &[0x42u8; 32]);
 
-        // First call: fails at pairing (invalid proof), not at replay guard.
+        // First call fails at pairing (invalid proof), not at replay guard.
         let _ = client.try_verify_identity(&proof_a, &proof_b, &proof_c, &nullifier);
 
-        // Manually inject the nullifier as if a prior valid proof succeeded.
+        // Inject nullifier as if a prior valid proof succeeded.
         env.as_contract(&contract_id, || {
             env.storage()
                 .persistent()
                 .set(&DataKey::Nullifier(nullifier.clone()), &true);
         });
 
-        // Second call: must fail with NullifierReused (error 4) before pairing.
+        // Second call must fail with NullifierReused (error 4).
         let err = client
             .try_verify_identity(&proof_a, &proof_b, &proof_c, &nullifier)
             .unwrap_err()
